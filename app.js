@@ -33,7 +33,9 @@
   var el = {};
   ["status", "status-text", "permit", "permit-text", "permit-btn", "last-when", "phrase",
    "timer-label", "countdown", "rail", "pulse-now", "toggle-pause", "deck", "deck-tally",
-   "intervals", "quiet-on", "quiet-times", "quiet-from", "quiet-to", "library-tally",
+   "rhythm-label", "rhythm-summary", "rhythm-mode", "rhythm-note",
+   "intervals", "times", "times-list", "times-add", "times-input",
+   "quiet-on", "quiet-times", "quiet-from", "quiet-to", "library-tally",
    "mode-window", "mode-note", "advanced-on", "composer-windows",
    "list-filter", "recent", "recent-tally", "recent-list", "recent-more",
    "composer", "composer-input", "counter", "list", "empty", "delivery-note", "export", "import",
@@ -92,6 +94,38 @@
   function intervalLabel(ms) {
     var match = INTERVALS.filter(function (i) { return i.ms === ms; })[0];
     return match ? match.label : Math.round(ms / MINUTE) + "m";
+  }
+
+  /**
+   * A stored "18:00" as this device would write it — so a reader who thinks
+   * in twelve-hour time sees 6:00 PM, without the app storing anything but
+   * the unambiguous form.
+   */
+  function clockLabel(hhmm) {
+    try {
+      return clockDate(hhmm).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    } catch (e) {
+      return hhmm;   // a locale the browser dislikes is not worth a broken chip
+    }
+  }
+
+  /** "09:00", from the minutes-of-day the scheduler works in. */
+  function toClock(minutes) {
+    return pad(Math.floor(minutes / 60)) + ":" + pad(minutes % 60);
+  }
+
+  /** The times currently set, normalised the way the scheduler reads them. */
+  function sendTimes() {
+    return Pulse.slotMinutes(state.settings.times).map(toClock);
+  }
+
+  /** How the next send reads in a toast — a gap, or a time on the clock. */
+  function nextSendLabel() {
+    if (!Pulse.usesTimes(state.settings)) {
+      return "in " + intervalLabel(state.settings.intervalMs);
+    }
+    var d = new Date(Pulse.nextAfter(Date.now(), state.settings));
+    return "at " + clockLabel(pad(d.getHours()) + ":" + pad(d.getMinutes()));
   }
 
   /** Report length against what a notification can actually show. */
@@ -258,10 +292,17 @@
     }
 
     var remainingMs = schedule.nextAt - now;
-    el["timer-label"].textContent = "Next send in";
+    // On set times the hour it lands on is the thing worth reading, and the
+    // countdown becomes the supporting detail rather than the whole story.
+    var due = new Date(schedule.nextAt);
+    el["timer-label"].textContent = Pulse.usesTimes(state.settings)
+      ? "Next send at " + clockLabel(pad(due.getHours()) + ":" + pad(due.getMinutes()))
+      : "Next send in";
     el.countdown.textContent = formatCountdown(remainingMs);
 
-    var span = state.settings.intervalMs;
+    // On set times the rail spans the gap back to the previous one, so a
+    // twelve-hour wait and a two-hour wait do not fill at the same rate.
+    var span = Pulse.spanFor(schedule.nextAt, state.settings);
     var elapsed = span - remainingMs;
     var progress = Math.max(0, Math.min(1, elapsed / span));
     el.rail.style.width = (progress * 100).toFixed(2) + "%";
@@ -346,6 +387,42 @@
   }
 
   function renderRhythm() {
+    var onTimes = state.settings.mode === "times";
+
+    el["rhythm-mode"].innerHTML = "";
+    [{ id: "interval", label: "Every" }, { id: "times", label: "At set times" }].forEach(function (option) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "chip";
+      button.textContent = option.label;
+      button.setAttribute("aria-pressed", String(onTimes === (option.id === "times")));
+      button.addEventListener("click", function () {
+        if (state.settings.mode === option.id) return;
+        saveSettings({ mode: option.id }).then(function () {
+          toast(option.id === "times"
+            ? "Sending at the times you set — next one " + nextSendLabel() + "."
+            : "Sending one every " + intervalLabel(state.settings.intervalMs) + ".");
+        });
+      });
+      el["rhythm-mode"].appendChild(button);
+    });
+
+    el["rhythm-label"].textContent = onTimes ? "Send at" : "Send one every";
+    el.intervals.hidden = onTimes;
+    el.times.hidden = !onTimes;
+
+    if (onTimes) renderTimes(); else renderIntervals();
+    renderRhythmNote();
+
+    var quiet = state.settings.quiet;
+    el["quiet-on"].checked = !!quiet.enabled;
+    el["quiet-times"].hidden = !quiet.enabled;
+    el["quiet-from"].value = quiet.from;
+    el["quiet-to"].value = quiet.to;
+  }
+
+  function renderIntervals() {
+    el["rhythm-summary"].textContent = "";
     el.intervals.innerHTML = "";
     INTERVALS.forEach(function (option) {
       var button = document.createElement("button");
@@ -360,12 +437,83 @@
       });
       el.intervals.appendChild(button);
     });
+  }
 
+  function renderTimes() {
+    var times = sendTimes();
     var quiet = state.settings.quiet;
-    el["quiet-on"].checked = !!quiet.enabled;
-    el["quiet-times"].hidden = !quiet.enabled;
-    el["quiet-from"].value = quiet.from;
-    el["quiet-to"].value = quiet.to;
+
+    el["rhythm-summary"].textContent = times.length ? times.length + " a day" : "none set";
+
+    el["times-list"].innerHTML = "";
+    times.forEach(function (hhmm) {
+      var buried = Pulse.inQuiet(clockDate(hhmm), quiet);
+
+      var li = document.createElement("li");
+      li.className = "time";
+      if (buried) li.dataset.quiet = "true";
+      li.appendChild(document.createTextNode(clockLabel(hhmm)));
+
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "time__remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", "Remove " + clockLabel(hhmm));
+      // Emptying the list would drop the app back to its interval without
+      // saying so, which reads as the schedule forgetting itself. Keep one.
+      remove.disabled = times.length === 1;
+      if (remove.disabled) remove.title = "Keep at least one send time";
+      remove.addEventListener("click", function () {
+        if (times.length === 1) { toast("Keep at least one send time."); return; }
+        saveSettings({ times: times.filter(function (t) { return t !== hhmm; }) }).then(function () {
+          toast("Removed " + clockLabel(hhmm) + ".");
+        });
+      });
+
+      li.appendChild(remove);
+      el["times-list"].appendChild(li);
+    });
+  }
+
+  /** A Date today at a stored "HH:MM", for asking whether quiet hours cover it. */
+  function clockDate(hhmm) {
+    var parts = String(hhmm).split(":");
+    var d = new Date();
+    d.setHours(parseInt(parts[0], 10) || 0, parseInt(parts[1], 10) || 0, 0, 0);
+    return d;
+  }
+
+  /**
+   * What the rhythm will actually do — which is worth saying out loud only
+   * where it might surprise: a time quiet hours swallows, or a list of them
+   * that leaves the app with nothing it is allowed to send.
+   */
+  function renderRhythmNote() {
+    if (!Pulse.usesTimes(state.settings)) {
+      el["rhythm-note"].textContent =
+        "A send lands this long after the last one, wherever that falls in the day.";
+      return;
+    }
+
+    var times = sendTimes();
+    var quiet = state.settings.quiet;
+    var buried = times.filter(function (t) { return Pulse.inQuiet(clockDate(t), quiet); });
+
+    if (buried.length && buried.length === times.length) {
+      el["rhythm-note"].textContent =
+        "Quiet hours cover every time you have set, so nothing can land at any of them. "
+        + "Sends resume at " + clockLabel(quiet.to) + " until you move one or shorten the quiet window.";
+      return;
+    }
+    if (buried.length) {
+      el["rhythm-note"].textContent =
+        (buried.length === 1 ? buried.map(clockLabel)[0] + " falls" : buried.length + " of these fall")
+        + " inside quiet hours and " + (buried.length === 1 ? "is" : "are") + " skipped rather than "
+        + "moved to " + clockLabel(quiet.to) + ".";
+      return;
+    }
+    el["rhythm-note"].textContent =
+      "Times are read off this device's clock, so they keep meaning the same hour wherever you are.";
   }
 
   function renderFilter() {
@@ -587,7 +735,8 @@
       "including in a background tab, and anything missed is delivered when you come back.";
     el["delivery-note"].textContent = open + " " + (background
       ? "Installed to your home screen, this browser may also deliver the occasional one while the app is " +
-        "closed — the browser decides how often, and it is far less often than your interval, so treat it as a bonus."
+        "closed — the browser decides how often, and it is far less often than the rhythm you set, so treat " +
+        "it as a bonus rather than an alarm clock."
       : "While the app is closed this browser sends nothing, so keep a tab open if you want the rhythm kept.");
   }
 
@@ -769,7 +918,7 @@
     var paused = !state.settings.paused;
     saveSettings({ paused: paused }).then(function () {
       toast(paused ? "Paused. Nothing sends until you resume."
-                   : "Running again — next one in " + intervalLabel(state.settings.intervalMs) + ".");
+                   : "Running again — next one " + nextSendLabel() + ".");
     });
   });
 
@@ -785,10 +934,36 @@
     });
   });
 
+  el["times-add"].addEventListener("submit", function (event) {
+    event.preventDefault();
+    var value = el["times-input"].value;
+    if (!/^\d{1,2}:\d{2}$/.test(value)) { toast("Pick a time first."); return; }
+
+    var times = sendTimes();
+    var normalised = toClock(Pulse.slotMinutes([value])[0]);
+    if (times.indexOf(normalised) !== -1) {
+      toast(clockLabel(normalised) + " is already on the list.");
+      return;
+    }
+
+    saveSettings({ times: times.concat([normalised]) }).then(function () {
+      el["times-input"].value = "";
+      toast("Added " + clockLabel(normalised) + " — next send " + nextSendLabel() + ".");
+    });
+  });
+
   el["quiet-on"].addEventListener("change", function () {
     var quiet = Object.assign({}, state.settings.quiet, { enabled: this.checked });
     saveSettings({ quiet: quiet }).then(function () {
-      toast(quiet.enabled ? "Overnight sends held until " + quiet.to + "." : "Sending around the clock.");
+      if (!quiet.enabled) { toast("Sending around the clock."); return; }
+      // Quiet hours can swallow a time that was chosen on purpose. Say which
+      // ones now, rather than leaving it to be worked out from the silence.
+      var buried = Pulse.usesTimes(state.settings)
+        ? sendTimes().filter(function (t) { return Pulse.inQuiet(clockDate(t), quiet); })
+        : [];
+      toast(buried.length
+        ? "Overnight sends held — " + buried.map(clockLabel).join(", ") + " now skipped."
+        : "Overnight sends held until " + clockLabel(quiet.to) + ".");
     });
   });
 

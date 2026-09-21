@@ -88,6 +88,143 @@ check("with no quiet window the interval is the whole rule", () => {
   assert(next === at(0, 0, 11).getTime(), "expected midnight, got " + new Date(next));
 });
 
+// --- sending at set times ------------------------------------------------
+
+/** A local-time Date on any day, for the tests that cross one. */
+function on(y, mo, d, hh, mm) {
+  if (typeof mm !== "number") throw new Error("on() needs an explicit minute");
+  return new Date(y, mo - 1, d, hh, mm, 0, 0);
+}
+
+const noQuiet = { enabled: false };
+const times = (list, extra) => Object.assign({ mode: "times", times: list, quiet: noQuiet }, extra);
+
+check("the list of times is sorted, de-duplicated, and cleaned of junk", () => {
+  assert(Pulse.slotMinutes(["21:00", "09:00", "13:00"]).join(",") === "540,780,1260", "not sorted");
+  assert(Pulse.slotMinutes(["09:00", "09:00"]).join(",") === "540", "duplicate kept");
+  assert(Pulse.slotMinutes([]).length === 0, "an empty list should stay empty");
+  assert(Pulse.slotMinutes(null).length === 0, "a missing list must not throw");
+});
+
+check("a hand-edited file costs you the bad entry, not the schedule", () => {
+  // parse() would let these through; slotMinutes is the last line of defence,
+  // and dropping the whole list would silently stop the app sending at all.
+  const junk = ["09:00", "nonsense", "25:00", "", "99:99", null, "13:00"];
+  assert(Pulse.slotMinutes(junk).join(",") === "540,780", `got ${Pulse.slotMinutes(junk)}`);
+});
+
+check("times mode needs both the switch and a usable list", () => {
+  assert(Pulse.usesTimes(times(["09:00"])), "a real list in times mode should be used");
+  assert(!Pulse.usesTimes({ mode: "interval", times: ["09:00"] }), "interval mode must ignore the list");
+  assert(!Pulse.usesTimes(times([])), "an empty list must fall back to the interval");
+  assert(!Pulse.usesTimes(times(["oops"])), "an unusable list must fall back to the interval");
+  assert(!Pulse.usesTimes({}), "settings written before times existed read as interval");
+  assert(!Pulse.usesTimes(null), "no settings at all must not throw");
+});
+
+check("the next send is the next time on the list", () => {
+  const list = ["09:00", "13:00", "21:00"];
+  assert(Pulse.nextSlot(at(7, 30).getTime(), list, noQuiet) === at(9, 0).getTime(), "before the first");
+  assert(Pulse.nextSlot(at(9, 30).getTime(), list, noQuiet) === at(13, 0).getTime(), "between two");
+  assert(Pulse.nextSlot(at(20, 59).getTime(), list, noQuiet) === at(21, 0).getTime(), "just before the last");
+});
+
+check("past the last time of the day it rolls to tomorrow's first", () => {
+  const next = Pulse.nextSlot(at(22, 0).getTime(), ["09:00", "21:00"], noQuiet);
+  assert(next === at(9, 0, 11).getTime(), "expected 09:00 tomorrow, got " + new Date(next));
+});
+
+check("a send lands once, not again on the same minute", () => {
+  // Exactly on a chosen time means that one has just gone out, so the next
+  // send is the following slot. Anything else would re-fire 09:00 forever.
+  assert(Pulse.nextSlot(at(9, 0).getTime(), ["09:00", "13:00"], noQuiet) === at(13, 0).getTime(),
+    "standing on a slot must look past it");
+});
+
+check("a single chosen time comes round once a day", () => {
+  assert(Pulse.nextSlot(at(9, 1).getTime(), ["09:00"], noQuiet) === at(9, 0, 11).getTime(),
+    "one time a day should next land tomorrow");
+});
+
+check("a chosen time inside quiet hours is skipped, not shunted to 07:00", () => {
+  // The alternative — pushing it to when quiet lifts — would have quiet hours
+  // rewrite a time somebody picked on purpose, and drop a send at an hour
+  // that was never on the list.
+  const next = Pulse.nextSlot(at(20, 0).getTime(), ["23:00", "09:00"], overnight);
+  assert(next === at(9, 0, 11).getTime(), "expected 09:00 tomorrow, got " + new Date(next));
+});
+
+check("with every chosen time buried in quiet hours, sends resume when it lifts", () => {
+  // A contradiction, and the screen says so where the times are edited — but
+  // an app that silently never sends again is the worse of the two answers.
+  const settings = times(["23:00", "02:00"], { quiet: overnight });
+  assert(Pulse.nextSlot(at(20, 0).getTime(), settings.times, overnight) === null,
+    "nextSlot should report the contradiction rather than guess");
+  assert(Pulse.nextAfter(at(20, 0).getTime(), settings) === at(7, 0, 11).getTime(),
+    "nextAfter should fall back to the moment quiet lifts");
+});
+
+check("nextAfter reads the mode, and an unusable list keeps the interval", () => {
+  const now = at(9, 30).getTime();
+  assert(Pulse.nextAfter(now, times(["13:00"])) === at(13, 0).getTime(), "times mode ignored");
+  assert(Pulse.nextAfter(now, { mode: "interval", times: ["13:00"], intervalMs: 30 * 60 * 1000, quiet: noQuiet })
+    === at(10, 0).getTime(), "interval mode should not consult the list");
+  assert(Pulse.nextAfter(now, times([], { intervalMs: 30 * 60 * 1000 })) === at(10, 0).getTime(),
+    "an empty list should leave the interval running rather than go silent");
+});
+
+/** Every day of 2026 in local time, so no zone's clock change is missed. */
+function everyDayOf2026(visit) {
+  const d = on(2026, 1, 1, 12, 0);
+  while (d.getFullYear() === 2026) {
+    visit(d.getMonth() + 1, d.getDate());
+    d.setDate(d.getDate() + 1);
+  }
+}
+
+function pad2(n) { return n < 10 ? "0" + n : String(n); }
+
+check("a chosen time keeps its wall-clock reading across a clock change", () => {
+  // Advancing a day by adding 24 hours of milliseconds lands an hour out on
+  // the days the clocks move — verified: in Europe/Berlin a 09:00 send came
+  // back as 10:00 on 28 March 2026 and 08:00 on 24 October. Which days those
+  // are depends on the zone the test happens to run in, so this sweeps the
+  // whole year; in a zone that never shifts it simply passes throughout.
+  everyDayOf2026((month, day) => {
+    const before = Pulse.nextSlot(on(2026, month, day, 8, 0).getTime(), ["09:00"], noQuiet);
+    const after = Pulse.nextSlot(on(2026, month, day, 10, 0).getTime(), ["09:00"], noQuiet);
+    [before, after].forEach((t) => {
+      const d = new Date(t);
+      assert(d.getHours() === 9 && d.getMinutes() === 0,
+        `2026-${pad2(month)}-${pad2(day)}: a 09:00 send landed at ${d.getHours()}:${pad2(d.getMinutes())}`);
+    });
+    assert(after > on(2026, month, day, 10, 0).getTime(),
+      `2026-${pad2(month)}-${pad2(day)}: tomorrow's send must be in the future`);
+  });
+});
+
+check("quiet hours lift at the wall-clock time across a clock change too", () => {
+  everyDayOf2026((month, day) => {
+    const lifts = new Date(Pulse.quietEnds(on(2026, month, day, 23, 0), overnight));
+    assert(lifts.getHours() === 7 && lifts.getMinutes() === 0,
+      `2026-${pad2(month)}-${pad2(day)}: quiet lifted at ${lifts.getHours()}:${pad2(lifts.getMinutes())}`);
+  });
+});
+
+check("the progress rail spans the real gap between two chosen times", () => {
+  const list = ["09:00", "13:00", "21:00"];
+  const span = (t) => Pulse.spanFor(t, times(list));
+  assert(span(at(13, 0).getTime()) === 4 * 60 * 60 * 1000, "09:00 to 13:00 is four hours");
+  assert(span(at(21, 0).getTime()) === 8 * 60 * 60 * 1000, "13:00 to 21:00 is eight hours");
+  // The first send of the day is measured back to the last of the day before,
+  // not to midnight, or the rail would jump at 00:00 every night.
+  assert(span(at(9, 0, 11).getTime()) === 12 * 60 * 60 * 1000, "21:00 to 09:00 is twelve hours");
+  assert(Pulse.spanFor(at(9, 0, 11).getTime(), times(["09:00"])) === 24 * 60 * 60 * 1000,
+    "one time a day spans the whole day");
+  assert(Pulse.spanFor(at(9, 0).getTime(), { mode: "interval", intervalMs: 1234 }) === 1234,
+    "on an interval the span is just the interval");
+});
+
 check("the phrase always goes in the body, never the title", () => {
   const short = "Start badly. Fix it later.";
   const out = Pulse.splitForNotification({ text: short, note: "" });

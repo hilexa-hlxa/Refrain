@@ -56,6 +56,35 @@ The **This cycle** row on screen is that bag, drawn — one tile per phrase, lit
 while it is still to come, dark once it has been dealt. The tiles all relight
 together when the cycle turns over.
 
+## Setting the rhythm
+
+Two ways, and the app keeps both.
+
+**Every** counts a gap forward from the last send — every 15 minutes, every
+four hours — so sends drift across the day.
+
+**At set times** lands them on the clock instead. List the times you want
+(09:00, 13:00, 21:00) and a send comes at each one.
+
+```
+Every 4h     09:12 ── 13:12 ── 17:12 ── 21:12   drifts with whenever you started
+At set times 09:00 ── 13:00 ─────────── 21:00   the hours you picked, every day
+```
+
+The times are read off this device's clock and stored as plain wall-clock
+times, which is the whole reason there is no timezone to choose anywhere in
+this app. 18:00 means six in the evening in whatever zone the device is in, so
+a schedule still means what you meant after a flight. A UTC offset stored
+alongside them could only ever make that worse.
+
+Set times change *when* a send is due. They do not change what is drawn: the
+shuffle bag still deals every phrase once per cycle, and Advanced Mode still
+decides what suits the hour. The two compose — a 21:00 send falls inside the
+evening window, so with Advanced Mode on it draws something honest, while an
+08:00 send draws something to start on.
+
+What this is not is an alarm. Read the next section before relying on a time.
+
 ## When sends arrive
 
 Delivery is done by your device, not by a server.
@@ -75,8 +104,24 @@ closed needs a push server, and this version deliberately has no server. So:
 Refrain keeps your rhythm while it is open, and catches you up when you
 return. Anything that arrives while it is closed is a bonus.
 
+This applies to set times exactly as it does to an interval. A send booked for
+18:00 arrives at 18:00 if Refrain is open, and otherwise when you next open it.
+Treat a set time as the hour a send is *due*, not an hour it is *guaranteed* —
+delivering on the dot with the app closed needs a push server, and this version
+deliberately has none.
+
 **Hold sends overnight** pauses delivery between the two times you choose, and
 picks up again when the window lifts.
+
+On set times a chosen time inside that window is **skipped**, not moved. Push a
+23:00 send to 07:00 and quiet hours would have silently rewritten a time you
+picked on purpose, and dropped a send at an hour you never asked for; the next
+time on your list is the better answer. The app strikes such a time through
+where you edit it, so the reason for the silence is visible rather than
+deduced. If quiet hours end up covering *every* time you have set, the two
+settings contradict each other — Refrain says so, and falls back to sending
+when the window lifts, because an app that quietly never sends again is worse
+than one that is briefly wrong.
 
 ## Advanced mode
 
@@ -111,8 +156,8 @@ If nothing suits the current hour, Refrain holds rather than sending
 something from the wrong window, and says so on screen. The next send lands as
 soon as a window opens with something in it, rather than an interval later.
 
-The interval still decides how often a send arrives; the window only decides
-what is eligible when one does.
+The rhythm still decides when a send arrives, whether that is an interval or a
+set time; the window only decides what is eligible when one does.
 
 ## How much text a notification shows
 
@@ -136,7 +181,7 @@ the full phrase is set large with no limit at all.
 - Muting a phrase keeps it in your list but takes it out of the rotation.
 - **Export** writes your phrases to a JSON file; **Import** adds back anything
   from such a file that you do not already have, and leaves the rest alone.
-  Categories travel with the phrases. Your interval and quiet hours are in the
+  Categories travel with the phrases. Your rhythm and quiet hours are in the
   file too, but they are only restored into an empty app — importing into a
   library you are already using must not quietly reset how it behaves.
 - **Recently sent** lists the last few, newest first; ones you asked for
@@ -154,9 +199,14 @@ waits — against a fake store, with no IndexedDB or DOM involved.
 `test/bag.test.js` checks the guarantees the shuffle bag makes — full coverage
 per cycle, no back-to-back repeats across cycle boundaries, uniform delivery
 over many cycles, and correct behaviour when the phrase list is edited
-mid-cycle. `test/pulse.test.js` covers the scheduling arithmetic, mostly the
-overnight window, which wraps past midnight, and the time windows Advanced
-Mode delivers by. `test/transfer.test.js` covers
+mid-cycle. `test/pulse.test.js` covers the scheduling arithmetic: the overnight
+window, which wraps past midnight, the time windows Advanced Mode delivers by,
+and the set-time schedule — which time comes next, what becomes of one buried
+in quiet hours, and a sweep of every day of a year checking that a chosen time
+keeps its wall-clock reading when the clocks move. That last one has teeth:
+under the "add 24 hours of milliseconds" arithmetic it replaced, a 09:00 send
+came back as 10:00 on 28 March and 08:00 on 24 October in Europe/Berlin.
+`test/transfer.test.js` covers
 import and export — what counts as the same phrase, and the promise that an
 import never disturbs what you already have.
 

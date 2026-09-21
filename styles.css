@@ -462,6 +462,81 @@ body {
   color: var(--amber);
 }
 
+/* The pick between a gap and a set of clock times. */
+.chips--mode { margin-bottom: 14px; }
+
+/* The chosen send times. Amber throughout, because in here amber is time. */
+.times__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.times__list:empty { display: none; }
+
+.time {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 6px 6px 13px;
+  border: 1px solid rgba(255, 179, 92, 0.45);
+  border-radius: 999px;
+  background: rgba(255, 179, 92, 0.1);
+  color: var(--amber);
+  font-family: var(--signal);
+  font-size: 12.5px;
+  letter-spacing: 0.02em;
+}
+
+/* A time that can never fire because quiet hours cover it is struck through
+   on the chip itself. Leaving the reason to a note underneath would explain
+   the silence only to someone who had not already stopped reading. */
+.time[data-quiet="true"] {
+  border-color: var(--etch-strong);
+  background: transparent;
+  color: var(--muted);
+  text-decoration: line-through;
+}
+
+.time__remove {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  margin-left: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0.6;
+  cursor: pointer;
+  transition: opacity 140ms ease, background 140ms ease;
+}
+
+.time__remove:hover { opacity: 1; background: rgba(255, 179, 92, 0.18); }
+.time__remove[disabled] { opacity: 0.25; cursor: not-allowed; background: transparent; }
+
+.times__add { display: flex; align-items: center; gap: 9px; }
+
+.times__add input {
+  padding: 7px 9px;
+  border: 1px solid var(--etch-strong);
+  border-radius: 8px;
+  background: var(--vessel-3);
+  color: var(--amber);
+  font-family: var(--signal);
+  font-size: 13px;
+}
+
+.times__add .btn { padding: 8px 14px; font-size: 13px; }
+
 .quiet { margin-top: 18px; }
 
 .switch { display: flex; align-items: center; gap: 11px; cursor: pointer; }

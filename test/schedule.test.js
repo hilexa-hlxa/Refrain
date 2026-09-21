@@ -179,6 +179,77 @@ check("the held pulse lands as soon as the window opens", async () => {
   assert(data.schedule.nextAt === at(7, 0, 11), "the schedule did not restart from the delivery");
 });
 
+// --- tick(): sending at set times ----------------------------------------
+
+const onTimes = (list, extra) => settings(Object.assign({ mode: "times", times: list }, extra));
+
+check("a tick at a chosen time delivers and books the next chosen time", async () => {
+  const data = store({
+    phrases: [phrase("a")], settings: onTimes(["09:00", "13:00", "21:00"]),
+    schedule: { nextAt: at(13, 0), lastAt: null },
+  });
+  const out = await Pulse.tick(at(13, 0));
+  assert(out.delivered && out.delivered.phrase.id === "a", "nothing delivered at a chosen time");
+  assert(data.schedule.nextAt === at(21, 0), `expected 21:00 next, got ${new Date(data.schedule.nextAt)}`);
+  assert(data.schedule.lastAt === at(13, 0), "lastAt not recorded");
+});
+
+check("the last time of the day books the first of the next", async () => {
+  const data = store({
+    phrases: [phrase("a")], settings: onTimes(["09:00", "21:00"]),
+    schedule: { nextAt: at(21, 0), lastAt: null },
+  });
+  await Pulse.tick(at(21, 0));
+  assert(data.schedule.nextAt === at(9, 0, 11), `expected 09:00 tomorrow, got ${new Date(data.schedule.nextAt)}`);
+});
+
+check("a missed time still delivers once on return, not once per time missed", async () => {
+  // The same promise the interval makes, and the reason this is a rhythm and
+  // not an alarm clock: what was missed arrives when you come back, once.
+  const data = store({
+    phrases: [phrase("a")], settings: onTimes(["09:00", "13:00", "21:00"]),
+    schedule: { nextAt: at(9, 0), lastAt: null },
+  });
+  const out = await Pulse.tick(at(15, 30));      // 09:00 and 13:00 both went by
+  assert(out.delivered, "nothing arrived after being away");
+  assert(data.history.length === 1, `delivered ${data.history.length} at once`);
+  assert(data.schedule.nextAt === at(21, 0), "the schedule should re-anchor to the next time, not chase 13:00");
+});
+
+check("a chosen time inside quiet hours resumes at the next one, not when quiet lifts", async () => {
+  const data = store({
+    phrases: [phrase("a")],
+    settings: onTimes(["23:00", "09:00"], { quiet: { enabled: true, from: "22:00", to: "07:00" } }),
+    schedule: { nextAt: at(23, 0), lastAt: null },
+  });
+  const out = await Pulse.tick(at(23, 0));
+  assert(out.delivered === null, "delivered inside the quiet window");
+  assert(data.schedule.nextAt === at(9, 0, 11),
+    `expected the 09:00 already on the list, got ${new Date(data.schedule.nextAt)}`);
+});
+
+check("switching to times mode with no usable list keeps the interval running", async () => {
+  // Silence would look like a bug. The interval is still there; use it.
+  const data = store({
+    phrases: [phrase("a")], settings: onTimes([]),
+    schedule: { nextAt: at(10, 0), lastAt: null },
+  });
+  const out = await Pulse.tick(at(10, 0));
+  assert(out.delivered, "nothing delivered with an empty list of times");
+  assert(data.schedule.nextAt === at(11, 0), "should have fallen back to the interval");
+});
+
+check("times mode still obeys the window and holds rather than sending the wrong phrase", async () => {
+  const data = store({
+    phrases: [phrase("morning-only", "morning")],
+    settings: onTimes(["21:00"], { advanced: true }),
+    schedule: { nextAt: at(21, 0), lastAt: null },
+  });
+  const out = await Pulse.tick(at(21, 0));
+  assert(out.delivered === null, "sent a morning phrase at nine in the evening");
+  assert(data.schedule.nextAt === at(21, 0), "the schedule should hold, not move");
+});
+
 check("an empty library holds the schedule so a first phrase pulses promptly", async () => {
   const data = store({ phrases: [], settings: settings(), schedule: { nextAt: at(10, 0), lastAt: null } });
   await Pulse.tick(at(12, 0));

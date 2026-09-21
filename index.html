@@ -87,11 +87,29 @@
     <p class="note" id="mode-note">Give each phrase a part of the day, and only the ones that suit the hour get sent.</p>
   </section>
 
+  <!-- Two ways to keep a rhythm: a gap counted forward from the last send, or
+       a set of times on the clock. The times are local wall-clock, so there is
+       no timezone to pick and none to get wrong. -->
   <section class="rhythm" aria-labelledby="rhythm-label">
     <div class="head">
-      <h2 class="eyebrow" id="rhythm-label">Send one every</h2>
+      <h2 class="eyebrow" id="rhythm-label">Rhythm</h2>
+      <p class="tally" id="rhythm-summary"></p>
     </div>
-    <div class="chips" id="intervals" role="group" aria-labelledby="rhythm-label"></div>
+
+    <div class="chips chips--mode" id="rhythm-mode" role="group" aria-label="How sends are timed"></div>
+
+    <div class="chips" id="intervals" role="group" aria-label="Send one every"></div>
+
+    <div class="times" id="times" hidden>
+      <ul class="times__list" id="times-list"></ul>
+      <form class="times__add" id="times-add">
+        <label class="sr-only" for="times-input">Add a send time</label>
+        <input type="time" id="times-input" required>
+        <button class="btn" type="submit">Add time</button>
+      </form>
+    </div>
+
+    <p class="note" id="rhythm-note"></p>
 
     <div class="quiet">
       <label class="switch">
