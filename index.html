@@ -5,8 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <!-- Nothing here loads from anywhere but this origin: no CDN, no analytics,
      no fonts, no dependencies. Saying so explicitly means a future mistake
-     that tried to inject a script would be refused rather than run. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
+     that tried to inject a script would be refused rather than run.
+     Styles are held to the same rule: no style="" attributes and no <style>
+     blocks, only styles.css. Setting a property from script (el.style.width)
+     is not markup and is still allowed. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'">
 <title>Refrain</title>
 <meta name="description" content="Your own phrases, dealt back to you one at a time on a rhythm you set.">
 <meta name="theme-color" content="#0B1618">

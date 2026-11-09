@@ -11,7 +11,7 @@
  */
 importScripts("lib/idb.js", "lib/bag.js", "lib/pulse.js");
 
-const CACHE = "refrain-shell-v16";
+const CACHE = "refrain-shell-v17";
 const SHELL = [
   "./",
   "index.html",
@@ -45,39 +45,41 @@ self.addEventListener("activate", (event) => {
 });
 
 /**
- * Navigations go to the network first so a redeploy is picked up on the next
- * visit rather than whenever the cache version happens to change; everything
- * else is served from cache immediately and refreshed in the background. Both
- * paths fall back to the cache, so the app still opens with no connection.
+ * Everything, the page itself included, is answered from the cache at once
+ * and refreshed in the background, so the app opens without waiting on the
+ * network — which on a weak connection used to mean staring at a blank
+ * screen until the request for index.html came back or gave up.
+ *
+ * Navigations used to go to the network first, so that a redeploy showed on
+ * the next visit even if CACHE had not been bumped. That is not needed for a
+ * redeploy done properly: a changed sw.js installs, precaches the new shell,
+ * takes over, and the page reloads itself once (see app.js), all on the
+ * visit that fetched it. And when the bump is forgotten, a fresh page over
+ * stale scripts is a worse place to be than a whole shell that is one visit
+ * behind, which is what this gives instead.
+ *
+ * With no connection and nothing cached for the address asked for, a
+ * navigation falls back to the cached index.html, so the app still opens.
  */
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET" || new URL(request.url).origin !== self.location.origin) return;
 
-  if (request.mode === "navigate") {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE).then((cache) => cache.put(request, copy));
-          return response;
-        })
-        .catch(() => caches.match(request).then((hit) => hit || caches.match("index.html")))
-    );
-    return;
-  }
-
   event.respondWith(
     caches.match(request).then((hit) => {
+      let stored = Promise.resolve();
       const fresh = fetch(request)
         .then((response) => {
           if (response && response.ok) {
             const copy = response.clone();
-            caches.open(CACHE).then((cache) => cache.put(request, copy));
+            stored = caches.open(CACHE).then((cache) => cache.put(request, copy));
           }
           return response;
         })
-        .catch(() => hit);
+        .catch(() => hit || (request.mode === "navigate" ? caches.match("index.html") : undefined));
+      // The page already has its answer when there was a hit, so nothing else
+      // is holding the worker open until the background copy has landed.
+      event.waitUntil(fresh.then(() => stored).catch(() => {}));
       return hit || fresh;
     })
   );

@@ -21,6 +21,7 @@
   // anyone who would rather have the words than the guarantee.
   var FITS_IN_NOTIFICATION = 100;
   var MAX_LENGTH = 120;
+  var MAX_IMPORT_BYTES = 1024 * 1024;
   var INTERVALS = [
     { label: "15m", ms: 15 * MINUTE },
     { label: "30m", ms: 30 * MINUTE },
@@ -283,10 +284,11 @@
     var paused = state.settings.paused;
     var activeCount = Pulse.active(state.phrases).length;
 
+    // setText throughout: this runs every second, and most seconds the label
+    // (and, while nothing is scheduled, the clock too) reads the same as before.
     if (paused || !activeCount || !schedule.nextAt) {
-      el["timer-label"].textContent =
-        paused ? "Paused" : !activeCount ? "Waiting for a phrase" : "Next send in";
-      el.countdown.textContent = "--:--";
+      setText(el["timer-label"], paused ? "Paused" : !activeCount ? "Waiting for a phrase" : "Next send in");
+      setText(el.countdown, "--:--");
       el.rail.style.width = "0%";
       return;
     }
@@ -295,10 +297,10 @@
     // On set times the hour it lands on is the thing worth reading, and the
     // countdown becomes the supporting detail rather than the whole story.
     var due = new Date(schedule.nextAt);
-    el["timer-label"].textContent = Pulse.usesTimes(state.settings)
+    setText(el["timer-label"], Pulse.usesTimes(state.settings)
       ? "Next send at " + clockLabel(pad(due.getHours()) + ":" + pad(due.getMinutes()))
-      : "Next send in";
-    el.countdown.textContent = formatCountdown(remainingMs);
+      : "Next send in");
+    setText(el.countdown, formatCountdown(remainingMs));
 
     // On set times the rail spans the gap back to the previous one, so a
     // twelve-hour wait and a two-hour wait do not fill at the same rate.
@@ -571,6 +573,7 @@
 
       var when = document.createElement("span");
       when.className = "recent__when";
+      when.dataset.at = entry.at;   // lets paintAges() keep this current without a rebuild
       when.textContent = formatAgo(entry.at);
 
       li.append(text, when);
@@ -753,6 +756,41 @@
     renderLibrary();
     renderRecent();
     paintClock(Date.now());
+    painted = paintKey();
+  }
+
+  /**
+   * Everything a repaint is drawn from that can change without anyone
+   * touching the screen: what is stored, which part of the day it is (in
+   * Advanced Mode that alone changes what may be sent), and whether
+   * notifications are allowed.
+   *
+   * The scheduler checks in every 25 seconds, and until this existed each
+   * check rebuilt every list and chip on the page whether or not anything
+   * had moved — which threw away keyboard focus and hover state each time.
+   * Now the check compares this against what is already drawn and leaves the
+   * page alone when they match. Anything the person does still calls
+   * render() directly, so this only ever spares the idle repaint.
+   */
+  var painted = null;
+  function paintKey() {
+    return JSON.stringify([
+      state.phrases, state.settings, state.bag, state.schedule, state.history,
+      Pulse.windowAt(new Date()),
+      typeof Notification === "undefined" ? null : Notification.permission,
+    ]);
+  }
+
+  /** "3 minutes ago" goes stale on its own; freshen it in place. */
+  function paintAges() {
+    var latest = (state.history || [])[0];
+    if (latest) setText(el["last-when"], formatAgo(latest.at));
+    var stamps = el["recent-list"].querySelectorAll(".recent__when");
+    for (var i = 0; i < stamps.length; i++) setText(stamps[i], formatAgo(Number(stamps[i].dataset.at)));
+  }
+
+  function setText(node, text) {
+    if (node.textContent !== text) node.textContent = text;
   }
 
   // --- actions ------------------------------------------------------------
@@ -766,6 +804,7 @@
       window: state.settings.advanced ? composerWindow : "anytime",
       createdAt: Date.now(),
     };
+    keepStorage();
     return savePhrases((state.phrases || []).concat([phrase]));
   }
 
@@ -797,9 +836,29 @@
     if (ticking) return Promise.resolve();
     ticking = true;
     lastTickAt = Date.now();
-    return Pulse.tick().then(function () { return refresh(); })
+    return Pulse.tick().then(function () { return Pulse.readState(); })
+      .then(function (next) {
+        state = next;
+        if (paintKey() !== painted) render(); else paintAges();
+      })
       .catch(function () { /* a failed tick retries on the next frame */ })
       .then(function () { ticking = false; });
+  }
+
+  /**
+   * Ask the browser not to clear what is stored here.
+   *
+   * The phrases exist nowhere else, and storage a site has not asked to keep
+   * is the browser's to reclaim: under disk pressure, or — in Safari, for a
+   * site that is not on the home screen — after about a week without a
+   * visit. Called once there is something worth keeping, and from something
+   * the person just did, since Firefox answers this with a prompt.
+   */
+  function keepStorage() {
+    if (!navigator.storage || !navigator.storage.persist || !navigator.storage.persisted) return;
+    navigator.storage.persisted()
+      .then(function (already) { return already || navigator.storage.persist(); })
+      .catch(function () { /* refused or unsupported — nothing else depends on it */ });
   }
 
   function requestPermission() {
@@ -808,6 +867,7 @@
       renderStatus();
       if (result === "granted") {
         registerBackgroundSync();
+        keepStorage();
         toast("Notifications on. Sends will arrive from here.");
       } else {
         toast("Still off — sends will only show inside the app.");
@@ -845,6 +905,10 @@
 
   /** Import adds what's missing and leaves what's already here alone. */
   function importPhrases(file) {
+    // A thousand phrases with notes come to well under this. Anything larger
+    // is not an export, and reading it would only freeze the page.
+    if (file.size > MAX_IMPORT_BYTES) { toast("That file is too large to be a Refrain export."); return; }
+
     file.text().then(function (raw) {
       var incoming = Transfer.parse(raw);
       var result = Transfer.merge(state.phrases, incoming, newId, Date.now());
@@ -857,6 +921,7 @@
 
       if (!result.added.length) { toast("Nothing new to add — those phrases are already here."); return; }
 
+      keepStorage();
       return savePhrases(result.phrases)
         .then(function () { return restoring ? saveSettings(incoming.settings) : null; })
         .then(function () {

@@ -256,6 +256,85 @@ check("an empty library holds the schedule so a first phrase pulses promptly", a
   assert(data.schedule.nextAt === at(10, 0), "an empty library should not spend the schedule");
 });
 
+// --- stored settings of the wrong shape ---------------------------------
+
+check("send times that are not a list are replaced on the way out of storage", async () => {
+  // A hand-edited export once put "times": "09:00" into storage. Every
+  // repaint then threw, and the app could only say storage was unavailable.
+  store({ phrases: [phrase("a")], settings: settings({ mode: "times", times: "09:00" }) });
+  const state = await Pulse.readState();
+  assert(Array.isArray(state.settings.times) && state.settings.times.length > 0,
+    `times came back as ${JSON.stringify(state.settings.times)}`);
+  const out = await Pulse.tick(at(9, 30));   // would have thrown inside slotMinutes
+  assert(out && out.schedule.nextAt > at(9, 30), "the schedule could not be set from repaired settings");
+});
+
+check("a gap that is not a length of time falls back to the default", async () => {
+  for (const bad of ["soon", null, NaN, 0, -5, 1, Infinity]) {
+    store({ phrases: [phrase("a")], settings: settings({ intervalMs: bad }) });
+    const state = await Pulse.readState();
+    assert(state.settings.intervalMs === Pulse.DEFAULT_SETTINGS.intervalMs,
+      `intervalMs ${String(bad)} was read back as ${String(state.settings.intervalMs)}`);
+  }
+});
+
+check("a stored gap of one millisecond does not send on every tick", async () => {
+  // What an import carrying "intervalMs": 1 used to do: four notifications
+  // in five seconds, and it never stopped.
+  const data = store({ phrases: [phrase("a"), phrase("b")], settings: settings({ intervalMs: 1 }) });
+  let delivered = 0;
+  for (let i = 0; i < 5; i++) if ((await Pulse.tick(at(9, 0) + i * 1000)).delivered) delivered++;
+  assert(delivered === 0, `delivered ${delivered} pulses in five seconds`);
+  assert(data.schedule.nextAt === at(10, 0), "the first tick should have booked a send an hour out");
+});
+
+// --- two callers at once ------------------------------------------------
+
+/** The part of the Web Locks API the scheduler uses: one holder at a time. */
+function lockManager() {
+  let tail = Promise.resolve();
+  const names = [];
+  return {
+    names,
+    request(name, work) {
+      names.push(name);
+      const run = tail.then(() => work());
+      tail = run.catch(() => {});
+      return run;
+    },
+  };
+}
+
+check("the page and the worker ticking at the same moment deliver one pulse", async () => {
+  // The page hands off to the worker as it is hidden, which is just when its
+  // own timer may be about to fire. Both read "due" before either has written.
+  const data = store({ phrases: [phrase("a"), phrase("b")], settings: settings(), schedule: { nextAt: at(10, 0), lastAt: null } });
+  ctx.navigator = { locks: lockManager() };
+  try {
+    const both = await Promise.all([Pulse.tick(at(10, 0)), Pulse.tick(at(10, 0))]);
+    const delivered = both.filter((r) => r.delivered).length;
+    assert(delivered === 1, `${delivered} of two overlapping ticks delivered`);
+    assert(data.bag.cursor === 1, `the bag moved on ${data.bag.cursor} places for one send`);
+    assert(ctx.navigator.locks.names.every((n) => n === "refrain-schedule"), "ticks did not share one lock");
+  } finally {
+    delete ctx.navigator;
+  }
+});
+
+check("Send now waits its turn behind a tick already under way", async () => {
+  const data = store({ phrases: [phrase("a"), phrase("b")], settings: settings(), schedule: { nextAt: at(10, 0), lastAt: null } });
+  ctx.navigator = { locks: lockManager() };
+  try {
+    const [ticked, sent] = await Promise.all([Pulse.tick(at(10, 0)), Pulse.fire("manual", at(10, 0))]);
+    assert(ticked.delivered && sent, "one of the two sends went missing");
+    assert(ticked.delivered.phrase.id !== sent.phrase.id, "both sends drew the same phrase");
+    assert(data.history.length === 2, `history holds ${data.history.length} entries for two sends`);
+    assert(data.bag.cursor === 2, `the bag is at ${data.bag.cursor} after two sends`);
+  } finally {
+    delete ctx.navigator;
+  }
+});
+
 // --- run ----------------------------------------------------------------
 
 (async () => {

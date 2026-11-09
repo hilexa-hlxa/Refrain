@@ -160,6 +160,74 @@ check("a file with no settings block reads as none rather than failing", () => {
   assert(got.length === 2, "phrases should still parse");
 });
 
+/** The settings a file with this settings block reads as. */
+const read = (settings) => Transfer.parse(JSON.stringify({ phrases: ["x"], settings })).settings;
+
+check("a full set of ordinary settings comes through unchanged", () => {
+  const mine = {
+    intervalMs: 2 * 60 * 60 * 1000, mode: "times", times: ["09:00", "13:00", "21:00"],
+    paused: false, advanced: true, quiet: { enabled: true, from: "22:00", to: "07:00" },
+  };
+  assert(JSON.stringify(read(mine)) === JSON.stringify(mine), `changed in transit: ${JSON.stringify(read(mine))}`);
+});
+
+check("a setting the app could not use is dropped, and the rest still count", () => {
+  // The two that did lasting damage before imports were checked: times that
+  // are not a list threw in every repaint, and a 1ms gap sent on every tick.
+  const got = read({ intervalMs: 1, mode: "times", times: "09:00", advanced: true });
+  assert(!("intervalMs" in got), `kept a 1ms interval: ${JSON.stringify(got)}`);
+  assert(!("times" in got), `kept times that are not a list: ${JSON.stringify(got)}`);
+  assert(got.mode === "times" && got.advanced === true, `lost the usable settings: ${JSON.stringify(got)}`);
+});
+
+check("only a real gap between sends is accepted", () => {
+  const bad = [1, 0, -900000, 60 * 1000, 25 * 60 * 60 * 1000, 1e15, "900000", null, true, [900000], {}];
+  bad.forEach((v) => {
+    const got = read({ intervalMs: v, advanced: true });
+    assert(!("intervalMs" in got), `accepted intervalMs ${JSON.stringify(v)}`);
+  });
+  [15 * 60 * 1000, 60 * 60 * 1000, 24 * 60 * 60 * 1000].forEach((v) => {
+    assert(read({ intervalMs: v }).intervalMs === v, `refused an ordinary interval of ${v}`);
+  });
+});
+
+check("send times keep only the entries that are times on a clock", () => {
+  const got = read({ times: ["09:00", " 7:30 ", "24:00", "12:60", "noon", 900, null, ["10:00"], "21:15"] });
+  assert(got.times.join() === "09:00,7:30,21:15", `got ${JSON.stringify(got.times)}`);
+  assert(read({ times: ["nope", 5] }) === null, "a list with no usable time should not be kept as an empty one");
+  const many = [];
+  for (let i = 0; i < 500; i++) many.push("0" + (i % 10) + ":00");
+  assert(read({ times: many }).times.length <= 48, "took an unbounded list of times");
+});
+
+check("quiet hours are taken field by field", () => {
+  const got = read({ quiet: { enabled: true, from: "25:00", to: "07:00", extra: 1 } });
+  assert(JSON.stringify(got.quiet) === JSON.stringify({ enabled: true, to: "07:00" }), `got ${JSON.stringify(got.quiet)}`);
+  assert(read({ quiet: "22:00" }) === null && read({ quiet: { enabled: "yes" } }) === null, "kept quiet hours it could not read");
+});
+
+check("switches must be true or false, and a mode must be one the app has", () => {
+  const got = read({ paused: "no", advanced: 1, mode: "hourly", intervalMs: 3600000 });
+  assert(JSON.stringify(got) === JSON.stringify({ intervalMs: 3600000 }), `got ${JSON.stringify(got)}`);
+});
+
+check("settings the app does not know are left behind", () => {
+  const got = read({ advanced: true, theme: "dark", __proto__: { polluted: true }, constructor: "x" });
+  assert(JSON.stringify(got) === JSON.stringify({ advanced: true }), `got ${JSON.stringify(got)}`);
+  assert(got.polluted === undefined, "took a key from the file's prototype");
+});
+
+check("a settings block that is not a set of settings reads as none", () => {
+  ["fast", 7, true, ["09:00"], {}, { theme: "dark" }].forEach((v) => {
+    assert(read(v) === null, `read ${JSON.stringify(v)} as settings`);
+  });
+});
+
+check("a note that is not text is not carried in", () => {
+  const got = Transfer.parse(JSON.stringify([{ text: "a", note: { html: "<b>" } }, { text: "b", note: 5 }, { text: "c", note: "kept" }]));
+  assert(got.map((p) => p.note).join("|") === "||kept", `got ${JSON.stringify(got.map((p) => p.note))}`);
+});
+
 // --- round trip ---------------------------------------------------------
 
 check("export then import into an empty list restores the same phrases", () => {

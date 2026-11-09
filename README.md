@@ -183,7 +183,10 @@ the full phrase is set large with no limit at all.
   from such a file that you do not already have, and leaves the rest alone.
   Categories travel with the phrases. Your rhythm and quiet hours are in the
   file too, but they are only restored into an empty app — importing into a
-  library you are already using must not quietly reset how it behaves.
+  library you are already using must not quietly reset how it behaves. A file
+  is not taken on trust: a setting the app could not have set itself — a gap
+  of a millisecond, send times that are not times — is ignored and the rest
+  of the file still counts.
 - **Recently sent** lists the last few, newest first; ones you asked for
   with **Send now** are marked apart from the ones the clock sent.
 
@@ -195,7 +198,9 @@ npm test          # or run any one on its own: node test/bag.test.js
 
 `test/schedule.test.js` covers the decisions that actually put a notification
 on screen — which phrase `fire()` draws, and when `tick()` delivers, holds, or
-waits — against a fake store, with no IndexedDB or DOM involved.
+waits — against a fake store, with no IndexedDB or DOM involved. It also
+covers the two ways that could go wrong from outside: stored settings of the
+wrong shape, and the page and the service worker ticking at the same moment.
 `test/bag.test.js` checks the guarantees the shuffle bag makes — full coverage
 per cycle, no back-to-back repeats across cycle boundaries, uniform delivery
 over many cycles, and correct behaviour when the phrase list is edited
@@ -207,8 +212,9 @@ keeps its wall-clock reading when the clocks move. That last one has teeth:
 under the "add 24 hours of milliseconds" arithmetic it replaced, a 09:00 send
 came back as 10:00 on 28 March and 08:00 on 24 October in Europe/Berlin.
 `test/transfer.test.js` covers
-import and export — what counts as the same phrase, and the promise that an
-import never disturbs what you already have.
+import and export — what counts as the same phrase, the promise that an
+import never disturbs what you already have, and which settings a file is
+allowed to bring with it.
 
 ## Layout
 
